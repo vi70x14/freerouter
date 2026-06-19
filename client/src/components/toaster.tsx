@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 import { X, ChevronDown, ChevronRight } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import {
@@ -63,19 +63,18 @@ function ToastCard({ toast }: { toast: Toast }) {
   const [expanded, setExpanded] = useState(false)
   const [exiting, setExiting] = useState(false)
 
-  function close() {
+  const close = useCallback(() => {
     setExiting(true)
     // 150ms matches the duration used in the fade-out class so the
     // element is gone before the parent re-renders without it.
     window.setTimeout(() => dismissToast(toast.id), 150)
-  }
+  }, [toast.id])
 
   useEffect(() => {
     if (toast.sticky) return
     const t = window.setTimeout(close, AUTO_DISMISS_MS)
     return () => window.clearTimeout(t)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [toast.id, toast.sticky])
+  }, [toast.sticky, close])
 
   const body = (
     <div

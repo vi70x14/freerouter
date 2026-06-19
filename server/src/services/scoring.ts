@@ -177,19 +177,22 @@ export function intelligenceScore(composite: number, min: number, max: number): 
 // ── Speed composite (manual speed_rank + size tier penalty) ────────────────
 // Mirrors the intelligenceComposite pattern: generates a composite value from
 // speed_rank and size_label for min-max normalization. Lower rank = faster.
-// Larger models get a tier penalty so a fast tiny model doesn't make a large
-// model look "slow" in relative terms — they're normalized within their class.
+// Larger models get a tier penalty (subtracted) so a fast tiny model doesn't
+// make a large model look "slow" in relative terms — they're normalized
+// within their class. The penalty REDUCES the composite for larger tiers,
+// ensuring smaller/faster models score higher after normalization.
 export function speedCompositeFromRank(speedRank: number, sizeLabel: string): number {
-  const TIER_PENALTY: Record<string, number> = {
+  const TIER_BONUS: Record<string, number> = {
     Small: 0,
     Medium: 100,
     Large: 200,
     Frontier: 300,
     Custom: 150,
   };
-  const penalty = TIER_PENALTY[sizeLabel] ?? 150;
-  // Invert rank so lower rank (faster) → higher composite value
-  return 1000 - speedRank + penalty;
+  const penalty = TIER_BONUS[sizeLabel] ?? 150;
+  // Invert rank so lower rank (faster) → higher composite value.
+  // Subtract penalty so larger models get a lower composite (appear slower).
+  return 1000 - speedRank - penalty;
 }
 
 // ── Guardrail: live rate-limit penalty ──────────────────────────────────────

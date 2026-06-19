@@ -63,7 +63,7 @@ export default function PlaygroundPage() {
   }, [])
 
   // ── Error formatting (Fix 5) ──────────────────────────────────────────────
-  const formatError = (status: number, body: any): string => {
+  const formatError = useCallback((status: number, body: any): string => {
     const errType: string = body?.error?.type ?? ''
     const errMsg: string = body?.error?.message ?? `HTTP ${status}`
     if (status === 401 || errType === 'authentication_error')
@@ -75,7 +75,7 @@ export default function PlaygroundPage() {
     if (status >= 500)
       return `🔌 Upstream provider error — the model returned an error.`
     return `❌ ${errMsg}`
-  }
+  }, [])
 
   // ── Streaming send (Fixes 3, 4, 6) ────────────────────────────────────────
   const handleSend = useCallback(async () => {
