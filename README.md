@@ -2,11 +2,9 @@
 
 # [AnimAIOS](https://github.com/animaios/airi) - FreeRouter
 
-**One endpoint. Any provider. Every free tier. More tokens per month than you'll ever need.**
+**One endpoint. Any provider. Every free tier. Smart routing that learns.**
 
-Aggregate free tiers from Google, Groq, Cerebras, NVIDIA, Mistral, OpenRouter, GitHub Models, Cohere, Cloudflare, HuggingFace, Z.ai (Zhipu), Ollama, Kilo, Pollinations, LLM7, OVH AI Endpoints, and OpenCode Zen — plus **any OpenAI-compatible endpoint you bring** (llama.cpp, LM Studio, vLLM, local Ollama, or any remote service with an API key) — behind a single `/v1/chat/completions` endpoint. Every provider gets the same fallback chain, the same intelligent routing, the same dashboard. Keys are stored encrypted. A Thompson-sampling bandit picks the best available model for each request, falls over to the next provider when one is rate-limited, and tracks per-key usage so you stay under every cap. If you can reach it over HTTP and it speaks OpenAI, API-Gateway routes to it.
-
-> **This is a fork** of [tashfeenahmed/freellmapi](https://github.com/tashfeenahmed/freellmapi). We add custom provider CRUD, per-provider rate limiting & parallel gating, model auto-discovery, editing of all models (including built-ins), and per-key exhaustion recovery — all detailed in [What this fork adds](#what-this-fork-adds). We track upstream weekly and merge cleanly.
+> Fork of [tashfeenahmed/freellmapi](https://github.com/tashfeenahmed/freellmapi). What follows is only what FreeRouter does differently.
 
 <img width="256" height="384" alt="kawaii anima-chan" src="https://github.com/user-attachments/assets/992ae2fc-0473-40c9-b99b-cea7840b6543" />
 
@@ -22,142 +20,92 @@ Aggregate free tiers from Google, Groq, Cerebras, NVIDIA, Mistral, OpenRouter, G
 
 </div>
 
-## Contents
+---
 
-- [What this fork adds](#what-this-fork-adds)
-- [Why this exists](#why-this-exists)
-- [Supported providers](#supported-providers)
-- [Features](#features)
-- [Not yet supported](#not-yet-supported)
-- [Quick start](#quick-start)
-- [Docker](#docker)
-- [Cloud Proxy](#cloud-proxy)
-- [Using the API](#using-the-api)
-- [Custom platforms and models](#custom-platforms-and-models)
-- [Screenshots](#screenshots)
-- [How it works](#how-it-works)
-- [Context Handoff](#context-handoff)
-- [Limitations](#limitations)
-- [Contributing](#contributing)
-- [Terms of Service review](#terms-of-service-review)
-- [Disclaimer](#disclaimer)
+## What FreeRouter adds
 
-## What this fork adds
+### Routing & Resilience
 
-This fork tracks [tashfeenahmed/freellmapi](https://github.com/tashfeenahmed/freellmapi) (upstream) and merges every release. On top of that, we ship features that turn API-Gateway from a weekend hack into a daily driver.
+| Feature | What | Why it matters |
+|---|---|---|
+| **Thompson-sampling bandit routing** | Learns which providers deliver; presets: balanced, smartest-first, fastest-first, reliability-first. Falls back to classic priority if you prefer. | Routes to the best model *right now*, not whatever's top of a handwritten list. Gets smarter over time. |
+| **Per-key rate tracking** | RPM / RPD / TPM / TPD per `(platform, model, key)` — checked *before* the request goes out. | The router cycles through keys intelligently instead of panicking when the first one hits a limit. |
+| **Per-key exhaustion recovery** | 3 retries per key → key cycling → 1-RPM recovery mode that probes keys until one comes back. | Your IDE never sees an error. Even when every key hits its daily cap, the system recovers on its own. |
+| **Per-provider parallel request gating** | `maxParallelRequests` per provider caps concurrency. | A slow local model can't starve Groq of connection slots. |
+| **Dynamic Degradation** | Severity-weighted progressive penalties: 429 (minor, 2min half-life), 5xx (major, 15min), consecutive hard failures (critical, 60min). Compounding exponential penalties with a sigmoid degradation factor. Dashboard-visible + env-configurable. | Replaces upstream's flat `rateLimitFactor`. Providers that fail a lot get progressively deprioritized — not just flatly penalized. |
+| **Strict model pinning** | Pinned models stay pinned — no silent fallback to a different model on error. | When you ask for a specific model, you get that model. No surprises. |
+| **Sticky sessions** | 30-min session affinity across multi-turn conversations. | Avoids the hallucination spike that comes from mid-conversation model switches. |
+| **Context handoff** | Injects a compact system message when the router switches models mid-conversation. Opt-in via `API_GATEWAY_CONTEXT_HANDOFF=on_model_switch`. | The new model picks up where the last one left off instead of starting fresh. |
 
-### Head-to-head comparison: what the original lacks and how this fork solves it
+### Custom Providers & Model Management
 
-| Capability | freellmapi (original) | api-gateway (this fork) | What this means for you |
-|---|---|---|---|
-| **Add your own providers** | ❌ Stuck with the built-in list. No way to add a custom endpoint. | ✅ Add any OpenAI-compatible endpoint — a cloud service, a local Ollama on your LAN, a vLLM server on your homelab. Give it a name, a URL, and optional rate limits. | You can bring your paid APIs, your local models, and any free-tier service you discover — all routed through the same smart fallback chain, no separate tools needed. |
-| **Per-provider rate limits & parallel gating** | ❌ No per-provider caps. All providers share a single generic rate limiter, so a slow endpoint can hog slots and a fragile free tier can get hammered. | ✅ Set RPM, RPD, TPM, TPD caps *per provider* plus a `maxParallelRequests` ceiling. Each provider gets its own guardrails. | A local Raspberry Pi model won't starve Groq. A free-tier endpoint with a 4-RPM cap won't get flooded into uselessness. You define the limits; the router enforces them. |
-| **Model auto-discovery** | ❌ Manual. You copy-paste model IDs one by one, or edit JSON by hand. | ✅ Register a provider and it automatically pulls `/v1/models`, seeds every model with sensible defaults, and slots them into your fallback chain. | No JSON editing. No guessing model IDs. One click and all models from your endpoint are ready to use. |
-| **Edit any model's properties** | ❌ Built-in models are read-only. You can't adjust intelligence rank, speed, context window, or capabilities. | ✅ Every model — built-in or custom — is editable from the dashboard. Intelligence rank, speed, size, context window, max tokens, tools/vision flags, rate limits — all changeable. | If you know your local Mixtral runs smarter than its default score, bump it. If a provider silently shrinks a context window, fix it. Changes take effect immediately, no restart needed. |
-| **Model visibility matches reality** | ❌ `/v1/models` returns everything — even models with no keys, dead endpoints, or ones you disabled weeks ago. | ✅ `/v1/models` only returns models that are in your fallback chain *and* have at least one active, healthy key. | Your IDE's model picker only shows models you can actually call. No more errors from picking a model you can't reach. |
-| **Key exhaustion recovery** | ❌ Retries once, then gives up. When every key hits its daily quota, the endpoint is dead until you manually intervene. | ✅ Three retries per key on transient failures. When all keys are exhausted, it drops to **1-RPM recovery mode** — probing each key once per minute until one comes back. Normal operation resumes automatically. | Your IDE never sees an error. Even when every key hits its daily cap, the system patiently waits and recovers on its own. You might not even notice. |
-| **How it routes differently** | ❌ Static priority chain — always tries provider A, then B, then C. | ✅ **Thompson-sampling bandit** that learns which providers actually deliver. Balanced, smartest-first, fastest-first, and reliability-first presets. Or fall back to classic priority ordering. | The router gets smarter over time. It favors providers that are fast and reliable, and avoids ones that are failing. Your requests hit the best model available *right now*, not just whatever is top of a handwritten list. |
-| **How it handles rate limits differently** | ❌ Generic cooldowns per model — a single 429 can bench a provider for everyone. | ✅ Per-key rate tracking (RPM/RPD/TPM/TPD) **before** the request goes out, not after. Keys with capacity get used; keys at their limit get skipped. Cooldowns are per-key, not per-model. | You can have 5 Gemini keys and the router will cycle through them intelligently instead of panicking when the first one hits a limit. Other keys for the same model stay available. |
+| Feature | What | Why it matters |
+|---|---|---|
+| **Custom provider CRUD** | Add any OpenAI-compatible endpoint (local Ollama, vLLM, any cloud service) from the dashboard. Full add / edit / archive-delete. Models auto-discovered from `/v1/models`. | You can bring your paid APIs, local models, and any free-tier service — all routed through the same fallback chain. |
+| **Keyless custom providers** | No API key required for local servers that don't need auth. | Local Ollama, llama.cpp, LM Studio — just add the URL. |
+| **Edit any model's properties** | Built-in *and* custom models are fully editable: intelligence rank, speed, context window, max tokens, tools/vision flags, rate limits. | Upstream locks built-in models. If you know your local Mixtral runs smarter, bump its score — take effect immediately, no restart. |
+| **Model visibility matches reality** | `/v1/models` only returns models with active, healthy keys. | Your IDE's model picker only shows models you can actually call. No more errors from picking a dead endpoint. |
+| **Live model filter** | Search / filter on the Models page with punctuation normalization. | Find the model you want in a 100+ model catalog without squinting. |
+| **Enabled rows float to top** | In the fallback chain, disabled models sink to the bottom. | Your active models stay visible; disabled ones don't clutter the top. |
+| **Archive instead of hard-delete** | Custom providers and models get archived, not destroyed. Restorable. | No more "I deleted the wrong thing." Undo is always available. |
 
-### Also different from the original
+### Benchmarks & Intelligence
 
-| Difference | freellmapi (original) | api-gateway (this fork) | Why it's better |
-|---|---|---|---|
-| **Encryption** | AES-256-GCM for API keys at rest (same). | Same encryption, plus sensitive error messages from providers are automatically **redacted** before they reach your client. | Provider error responses sometimes leak key fragments, account IDs, or internal URLs. The fork strips those before you ever see them. |
-| **Tool call handling** | Passes tool calls through. | Passes tool calls through **plus** includes automatic repair for common JSON Schema mismatches and a rescue system for inline tool-call dialects some providers emit. | Fewer broken tool loops. Models that emit slightly malformed tool calls get automatically corrected instead of failing. |
-| **Context handoff on model switch** | ❌ Not present. | ✅ Optional. When a session falls over to a different model, injects a compact system message so the new model knows it's continuing an existing task instead of starting fresh. | No more "let me start over" when the router switches models mid-conversation. The new model picks up where the last one left off. |
-| **Custom provider management** | ❌ Not available. | ✅ Full CRUD from the dashboard. Add, edit, delete custom providers. Auto-discover models on creation. Delete cascades cleanly (removes models, keys, and fallback entries). | Your entire setup — built-in and custom — is managed from one place, with one UI, using one workflow. |
-| **Dashboard capability** | Keys, Fallback Chain, Playground, Analytics. | All of the above **plus** model editing, custom provider management, embeddings family configuration, and settings page. | Everything you need is in the dashboard. You rarely touch config files or a terminal. |
+| Feature | What | Why it matters |
+|---|---|---|
+| **Benchmark Unification** | Merges Artificial Analysis, SWE-rebench, and NIMStats into a single composite intelligence score. Per-source columns, canonical model keys, incremental recomputation, configurable weights. | Upstream has no benchmark integration. Router scores reflect real-world benchmarks, not hand-tuned guesses. |
+| **Free-only enforcement** | OpenRouter and OpenCode routes restricted to `:free` models only. Monthly token budget system removed in favor of simpler, more honest quotas. | No surprises on a "free" tier that suddenly charges. What's free stays free. |
+| **Reasoning token fairness** | `tokPerSec` speed score includes reasoning/thinking tokens. | Upstream doesn't count reasoning tokens — reasoning models get unfairly penalized for thinking time. This levels the field. |
 
-We chose this path because we use API-Gateway as a daily driver — not as a weekend project. These features make it faster to set up, harder to break, and more resilient when providers inevitably flake. If you're evaluating API-Gateway for actual daily use, you want this fork.
+### Provider Support
 
-## Why this exists
+| Feature | What | Why it matters |
+|---|---|---|
+| **CommandCode provider** | Built-in with full NDJSON translation layer. | Provider upstream doesn't ship. |
+| **NVIDIA NIM adapter hardening** | Robust handling of NIM-specific quirks. | NIM's API has non-standard behaviors that break naïve adapters. |
+| **OpenAI Responses API** | `POST /v1/responses` — a translating shim for Codex CLI, with full streaming events and tool calls. | Upstream only has chat completions. Codex CLI works out of the box. |
+| **End-to-end thinking/reasoning** | `reasoning_content` deltas, Gemini thought signatures, thinking block passthrough across all providers. | Reasoning models work correctly everywhere. Thinking tokens don't get silently dropped. |
+| **Vision-aware routing** | Image requests auto-restrict to vision-capable models; 422 if none available. | No silent image drops. If you send an image, it goes to a model that can see it — or you get a clear error. |
+| **Embeddings with family-based failover** | `/v1/embeddings` never crosses model families (different dimensions = incompatible). Dashboard config for families. | Failover won't silently corrupt your vector store by switching to a model with different embedding dimensions. |
+| **Cloud Proxy** | Optional Cloudflare Workers proxy layer for IP rotation and header stripping. `npm run proxy:deploy` one-command deploy. | Route requests through distributed exit IPs so providers see clean, non-identifying addresses. Entirely opt-in. |
 
-Every serious AI lab now offers a free tier — millions of tokens a month, thousands of requests a day. On its own each tier is a toy. Stacked together, they add up to roughly **1.7 billion tokens per month** of working inference capacity, across 100+ models from small-and-fast to frontier-class reasoning.
+### Dashboard & UX
 
-The problem is that stacking them by hand is painful: a dozen different SDKs, a dozen different rate limits, a dozen places a request can fail. API-Gateway collapses all of that — every free tier, every custom endpoint, every local model — into one OpenAI-compatible endpoint. Point any OpenAI client library at your local server, and it routes transparently across whichever providers you've added keys for.
+| Feature | What | Why it matters |
+|---|---|---|
+| **Model editing UI** | Edit all model properties from the dashboard — built-in or custom. | No config files, no restarts. Changes take effect immediately. |
+| **Custom provider management UI** | Full CRUD from the dashboard. Auto-discover models on creation. | Your entire setup is managed from one place, one UI, one workflow. |
+| **Embeddings family config** | Dashboard page for family management. | Configure which model families exist and who serves them, without touching code. |
+| **Settings page** | Dashboard settings panel. | Central place for configuration instead of editing `.env` and restarting. |
+| **Toast notifications** | E.g. when auto-discovery adds new models. | You know when something changes without checking logs. |
+| **Provider error redaction** | Sensitive error messages from providers are stripped before reaching the client. | Provider responses sometimes leak key fragments, account IDs, or internal URLs. FreeRouter strips those. |
+| **Tool call repair** | Automatic fix for common JSON Schema mismatches and inline tool-call dialects. | Fewer broken tool loops. Slightly malformed tool calls get corrected instead of failing. |
+| **Dark mode** | Dashboard dark theme. | Because staring at a white dashboard at 2 AM is unnecessary suffering. |
 
-And when the built-in list isn't enough? You add your own. Any OpenAI-compatible HTTP endpoint becomes a provider in under a minute.
+### Infrastructure
 
-## Supported providers
+| Feature | What | Why it matters |
+|---|---|---|
+| **`api` CLI** | `api start`, `api stop`, `api status`, multi-instance tracking. | Upstream has no CLI. Manage FreeRouter from the terminal without remembering npm scripts. |
+| **Server log rotation** | Prevents disk fill from unbounded logs. | Long-running servers don't silently fill your disk. |
+| **DeepSource test coverage reporting** | Integrated coverage pipeline. | Coverage visibility without wiring it up yourself. |
 
-<table>
-<tr>
-<td align="center" width="180"><a href="https://ai.google.dev"><b>Google</b><br/>Gemini 2.5 Flash · 3.x previews</a></td>
-<td align="center" width="180"><a href="https://groq.com"><b>Groq</b><br/>Llama 3.3, Llama 4, GPT-OSS, Qwen3</a></td>
-<td align="center" width="180"><a href="https://cerebras.ai"><b>Cerebras</b><br/>Qwen3 235B</a></td>
-<td align="center" width="180"><a href="https://opencode.ai/zen"><b>OpenCode Zen</b><br/>DeepSeek V4 Flash · Nemotron (promo)</a></td>
-</tr>
-<tr>
-<td align="center"><a href="https://mistral.ai"><b>Mistral</b><br/>Large 3 · Medium 3.5 · Codestral · Devstral</a></td>
-<td align="center"><a href="https://openrouter.ai"><b>OpenRouter</b><br/>21 free-tier models</a></td>
-<td align="center"><a href="https://github.com/marketplace/models"><b>GitHub Models</b><br/>GPT-4.1 · GPT-4o</a></td>
-<td align="center"><a href="https://developers.cloudflare.com/workers-ai"><b>Cloudflare</b><br/>Kimi K2 · GLM-4.7 · GPT-OSS · Granite 4</a></td>
-</tr>
-<tr>
-<td align="center"><a href="https://cohere.com"><b>Cohere</b><br/>Command R+ · Command-A (trial)</a></td>
-<td align="center"><a href="https://docs.z.ai"><b>Z.ai (Zhipu)</b><br/>GLM-4.5 · GLM-4.7 Flash</a></td>
-<td align="center"><a href="https://build.nvidia.com"><b>NVIDIA</b><br/>NIM · 40 RPM free (eval-only ToS)</a></td>
-<td align="center"><a href="https://huggingface.co/docs/inference-providers"><b>HuggingFace</b><br/>Router → DeepSeek V4 · Kimi K2.6 · Qwen3</a></td>
-</tr>
-<tr>
-<td align="center"><a href="https://ollama.com"><b>Ollama Cloud</b><br/>GLM-4.7 · Kimi K2 · gpt-oss · Qwen3</a></td>
-<td align="center"><a href="https://kilo.ai"><b>Kilo Gateway</b><br/>:free routes (anon ok)</a></td>
-<td align="center"><a href="https://pollinations.ai"><b>Pollinations</b><br/>GPT-OSS 20B (anon ok)</a></td>
-<td align="center"><a href="https://llm7.io"><b>LLM7</b><br/>GPT-OSS · Llama 3.1 · GLM (anon ok)</a></td>
-</tr>
-<tr>
-<td align="center"><a href="https://endpoints.ai.cloud.ovh.net"><b>OVH AI Endpoints</b><br/>Qwen3.5 397B · GPT-OSS · Llama 3.3 (anon ok)</a></td>
-<td align="center"></td>
-<td align="center"></td>
-<td align="center"></td>
-</tr>
-</table>
+## In Development
 
-<p align="center"><strong>Don't see yours? Add it.</strong> Any OpenAI-compatible endpoint — cloud service, local server, homelab GPU — becomes a provider in under a minute. It gets the same fallback chain, the same intelligent routing, the same rate-limit protection as every built-in. <a href="#custom-platforms-and-models">See how →</a></p>
+These are spec'd and in progress — see `docs/specs/` for details:
 
-## Features
+- **Benchmark Unification** — merging AA / SWE-rebench / NIMStats into unified intelligence scores
+- **Dynamic Degradation** — severity-weighted progressive failure penalties
+- **FreeLLMProxy Integration** — `npm run proxy:deploy` → upcoming `proxy:up` zero-config Cloudflare Workers deployment
+- **Reasoning Token Fairness** — speed scores that count thinking tokens
 
-- **OpenAI-compatible** — `POST /v1/chat/completions` and `GET /v1/models` work with the official OpenAI SDKs and any OpenAI-compatible client (LangChain, LlamaIndex, Continue, Cline, Codex, Claude Code via CC Switch, etc.). Just change `base_url`.
-- **Responses API** — `POST /v1/responses` (the wire format current Codex CLI versions require) is implemented as a translating shim over the same router, with full streaming events and tool calls.
-- **Streaming and non-streaming** — Server-Sent Events for `stream: true`, JSON response otherwise. Every provider adapter implements both.
-- **Tool calling** — OpenAI-style `tools` / `tool_choice` requests are passed through, and assistant `tool_calls` + `tool` role follow-up messages round-trip across providers.
-- **Embeddings** — `/v1/embeddings` with family-based routing: failover only ever happens between providers serving the *same* model (vectors from different models are incompatible), never across models. See [Embeddings](#embeddings).
-- **Intelligent automatic fallover** — If the chosen provider returns a 429, 5xx, or times out, the router skips it, puts the key on a short cooldown, and retries on the next model in your fallback chain. No manual intervention, no dropped requests.
-- **Per-key rate tracking** — RPM, RPD, TPM, and TPD counters per `(platform, model, key)` so the router always picks a key that's under its caps. You never accidentally blow through a free tier's daily limit at 9 AM.
-- **Per-key exhaustion recovery** — Three retries per key on transient errors. When every key for a model is exhausted, the router doesn't give up — it drops to 1-RPM recovery mode, cycling through keys until one succeeds, then resumes normal operation. Your IDE never sees an error.
-- **Provider-level parallel request gating** — Cap concurrent requests per provider so a slow endpoint never starves faster ones of connection slots. Your Groq connection stays fast even when a local model is chewing on a long prompt.
-- **Thompson-sampling bandit routing** — The router learns which providers actually deliver and routes accordingly. Balanced, smartest-first, fastest-first, and reliability-first presets. Or fall back to classic manual priority ordering anytime.
-- **Sticky sessions** — Multi-turn conversations keep talking to the same model for 30 minutes to avoid the hallucination spike that comes from mid-conversation model switches.
-- **Encrypted key storage** — API keys are encrypted with AES-256-GCM before hitting SQLite; decryption happens in-memory just before a request.
-- **Unified API key** — Clients authenticate to your proxy with a single `api-gateway-…` bearer token. You never expose upstream provider keys to your apps.
-- **LAN auto-trust** — API-Gateway is a single-user tool, so the admin UI and `/api/*` routes skip the login form whenever the request comes from the local machine (loopback, RFC1918, link-local, IPv6 ULA / link-local). Remote callers still need an email + password account (scrypt-hashed, session-token auth), set on first run. The `/v1` proxy keeps its own unified-key auth for apps.
-- **Health checks** — Periodic probes mark keys as `healthy`, `rate_limited`, `invalid`, or `error` so the router skips dead ones automatically.
-- **Admin dashboard** — React + Vite UI to manage keys, reorder the fallback chain, edit any model's properties, register custom providers (models are auto-discovered on creation), inspect analytics, and run prompts in a playground. Dark mode included.
-- **Analytics** — Per-request logging with latency, token counts, success rate, and per-provider breakdowns over 24h / 7d / 30d windows.
-- **Context handoff on model switch** — Optional. When a session falls over to a different model, injects one compact system message so the new model knows it is continuing an existing task. Disabled by default; enable with `API_GATEWAY_CONTEXT_HANDOFF=on_model_switch`. See [Context Handoff](#context-handoff).
-- **Runs anywhere Node 20+ runs** — Windows, macOS, Linux servers, or a small ARM SBC (Raspberry Pi included). ~40 MB RSS at idle behind PM2 / systemd / whatever supervisor you prefer.
-
-## Not yet supported
-
-The scope is deliberately narrow. If a feature isn't on this list and isn't below, assume it isn't there yet.
-
-- **Image generation** (`/v1/images/*`)
-- **Audio / speech** (`/v1/audio/*`)
-- **Legacy completions** (`/v1/completions`) — only the chat endpoint is implemented
-- **Moderation** (`/v1/moderations`)
-- **`n > 1`** (multiple completions per request)
-- **Per-user billing / multi-tenant auth** — single-user by design
-
-PRs that add any of these are very welcome. See [Contributing](#contributing).
-
-## Quick start
+## Quick Start
 
 **Prerequisites:** Node.js 20+, npm. (Docker also works — see [Docker](#docker).)
 
 ```bash
-git clone https://github.com/MLuqmanBR/api-gateway.git
-cd api-gateway
+git clone https://github.com/animaios/freerouter.git
+cd freerouter
 npm install
 cp .env.example .env
 
@@ -170,7 +118,7 @@ npm run dev
 
 Open http://localhost:5173 (the Vite dev UI), add your provider keys on the **Keys** page, reorder the **Fallback Chain** to taste, and grab your unified API key from the **Keys** page header. That unified key is what you point your OpenAI SDK at.
 
-> **Reaching the dev UI from another device on your LAN?** Use `npm run dev:lan` — it passes `--host` through to Vite, which then prints a `Network: http://<your-ip>:5173` URL you can open from a phone or another machine. (Plain `npm run dev -- --host` does *not* work here: the root `dev` script is a `concurrently` wrapper, so the flag never reaches Vite.) API calls go through Vite's dev proxy, so no extra server config is needed.
+> **Reaching the dev UI from another device on your LAN?** Use `npm run dev:lan` — it passes `--host` through to Vite. (Plain `npm run dev -- --host` does *not* work: the root `dev` script is a `concurrently` wrapper, so the flag never reaches Vite.)
 
 For a production build without Docker:
 
@@ -186,8 +134,8 @@ Request analytics are retained for 90 days or 100000 request rows by default, wh
 ## Docker
 
 ```bash
-git clone https://github.com/MLuqmanBR/api-gateway.git
-cd api-gateway
+git clone https://github.com/animaios/freerouter.git
+cd freerouter
 
 # Generate an encryption key
 ENCRYPTION_KEY="$(openssl rand -hex 32)"
@@ -210,14 +158,14 @@ More Docker operations and examples live in [docker/README.md](./docker/README.m
 
 ## Cloud Proxy
 
-API-Gateway ships an **optional** Cloudflare Workers proxy layer for IP rotation and header stripping. Deploy it to route requests through geographically-distributed exit IPs so upstream providers see consistent, non-identifying IP addresses instead of your real one.
+FreeRouter ships an **optional** Cloudflare Workers proxy layer for IP rotation and header stripping. Deploy it to route requests through geographically-distributed exit IPs so upstream providers see consistent, non-identifying IP addresses instead of your real one.
 
-> **This feature is entirely opt-in.** If you don’t clone the `freellmproxy` submodule or deploy workers, the gateway works exactly as before — no proxy, no errors.
+> **This feature is entirely opt-in.** If you don't clone the `freellmproxy` submodule or deploy workers, the gateway works exactly as before — no proxy, no errors.
 
 **Prerequisites:** [wrangler](https://developers.cloudflare.com/workers/wrangler/) installed and logged in. Either install globally (`npm i -g wrangler && wrangler login`) or use the devDependency bundled in the proxy submodule (`cd freellmproxy && npx wrangler login`).
 
 ```bash
-npm run proxy:deploy
+npm run proxy:deploy    # upcoming: npm run proxy:up
 ```
 
 On first run this automatically:
@@ -348,7 +296,7 @@ resp = client.chat.completions.create(
 print(resp.choices[0].message.content)
 ```
 
-If no vision-capable model is enabled in your Fallback Chain, an image request returns a clear `422` (`code: "no_vision_model"`) rather than silently dropping the image.
+If no vision-capable model is enabled in your Fallback Chain, an image request returns `422` (`code: "no_vision_model"`) rather than silently dropping the image.
 
 Every response carries an `X-Routed-Via: <platform>/<model>` header so you can see which provider actually served each call. If a request fell over between providers, you'll also see `X-Fallback-Attempts: N`.
 
@@ -388,90 +336,12 @@ curl http://localhost:3001/v1/embeddings \
 
 The default family, per-provider toggles, and priorities live on the dashboard's **Models → Embeddings** page.
 
-## Custom platforms and models
-
-The built-in provider list is a starting point, not a boundary. From the Keys page, the **Platforms** grid is the unified catalog — every built-in platform you've added a key for, alongside every custom platform you've registered. The grid ends with an **Add New Platform** tile that opens a modal for:
-
-- **Slug** — a short identifier like `my-ollama` (lowercase letters, digits, dashes; 2-32 chars; cannot collide with a built-in).
-- **Display name** — shown in the dashboard.
-- **Base URL** — the OpenAI-compatible endpoint, e.g. `http://192.168.1.10:11434/v1`.
-- **Rate limits** (optional) — RPM, RPD, TPM, TPD caps enforced per-provider. A local Ollama that can handle 200 RPM gets different treatment than a free-tier cloud endpoint limited to 4.
-- **Max parallel requests** (optional) — concurrency ceiling so this provider never hogs all connection slots.
-
-Once a platform exists, its models are automatically discovered from the endpoint's `/v1/models` during creation by default. However, discovered models are **disabled by default** and must be manually enabled. You can also re-run discovery at any time via `POST /api/custom-providers/:slug/sync-models`, and there's an option to auto-enable discovered models during creation.
-
-- **Model ID** and **Display name** — required.
-- **Context window**, **Supports tools**, **Supports vision** — basic flags.
-- **Advanced** toggle exposes intelligence rank, speed rank, size label, per-model rate limits, and max output tokens.
-
-The model joins the fallback chain at the lowest priority and shows up everywhere built-in models do — `/v1/models`, the Fallback page, the Analytics page. You can edit any model (built-in or custom) later: adjust ranks, toggle tools/vision, cap output tokens, change rate limits — all from the dashboard.
-
-Adding an API key for a custom platform works the same as for a built-in: pick the custom slug in the **Add a provider key** form, paste the bearer (or leave blank for local servers that don't need one), and the key routes to your endpoint.
-
-Removing a custom platform cascades — it drops every model on that platform, every key, and every fallback entry. There's no "leaving a model orphaned" state.
-
-## Screenshots
-
-### Keys
-
-Manage provider credentials and grab the unified API key your apps connect with. Each key shows a status dot and when it was last health-checked. Custom platforms appear alongside built-in ones in the unified grid.
-
-![Keys page](repo-assets/keys.png)
-
-### Playground
-
-Send a chat completion through the router and see which provider served it, with the model ID and latency printed right on the message.
-
-![Playground page](repo-assets/playground.png)
-
-### Analytics
-
-Request volume, success rate, tokens in and out, average latency, and per-provider breakdowns over 24h / 7d / 30d windows.
-
-![Analytics page](repo-assets/analytics.png)
-
-## How it works
-
-```
-┌──────────────────┐   Bearer api-gateway-…   ┌─────────────────────────┐
-│  OpenAI SDK /    │ ──────────────────────▶ │  Express proxy (:3001)  │
-│  curl / any      │ ◀────────────────────── │  /v1/chat/completions   │
-│  OpenAI client   │      streamed tokens    └────────────┬────────────┘
-└──────────────────┘                                      │
-                                                          ▼
-                             ┌────────────────────────────────────────────────┐
-                             │  Router                                        │
-                             │   1. Pick highest-priority model that          │
-                             │      (a) has a healthy key and                 │
-                             │      (b) is under all its rate limits.         │
-                             │   2. Decrypt key, call provider SDK.           │
-                             │   3. On 429/5xx → cooldown + retry next model. │
-                             │   4. On key exhaustion → cycle keys, 1-RPM.    │
-                             └────────────────────────────────────────────────┘
-                                          │
-   ┌──────────────┬────────────┬──────────┴─────────┬─────────────┬──────────┐
-   ▼              ▼            ▼                    ▼             ▼          ▼
- Google         Groq        Cerebras           OpenRouter        HF       …and more
-                                +
-                        Custom Providers
-                    (any OpenAI-compatible endpoint)
-```
-
-- **Router** (`server/src/services/router.ts`) — picks a model per request using Thompson-sampling bandit scoring or manual priority chain.
-- **Scoring** (`server/src/services/scoring.ts`) — Thompson-sampling bandit: reliability × speed × intelligence, with headroom and rate-limit guardrails.
-- **Rate-limit ledger** (`server/src/services/ratelimit.ts`) — in-memory RPM/RPD/TPM/TPD counters backed by SQLite, with cooldowns on 429s.
-- **Key exhaustion** (`server/src/services/key-exhaustion.ts`) — per-key 3-retry → key cycling → 1-RPM recovery mode.
-- **Provider adapters** (`server/src/providers/*.ts`) — one file per provider, implementing the `Provider` base class: `chatCompletion()` and `streamChatCompletion()`. Custom providers are resolved from the `custom_providers` table at request time.
-- **Health service** (`server/src/services/health.ts`) — periodic probe keeps key status fresh.
-- **Dashboard** (`client/`) — React + Vite + shadcn/ui admin surface.
-- **Storage** — SQLite (`better-sqlite3`) with AES-256-GCM envelope encryption for keys.
-
 ## Context Handoff
 
-When API-Gateway falls over to a different model mid-conversation (quota, rate limit, cooldown), the new model has no idea it is picking up someone else's task. **Context handoff** adds a single compact `system` message to the outbound request that tells the new model exactly that:
+When FreeRouter falls over to a different model mid-conversation (quota, rate limit, cooldown), the new model has no idea it is picking up someone else's task. **Context handoff** adds a single compact `system` message to the outbound request that tells the new model exactly that:
 
 ```
-API-Gateway context handoff:
+FreeRouter context handoff:
 You are taking over an ongoing conversation from another model (groq:llama-3 → google:gemini-flash).
 Continue the user's task using the conversation context already provided in this request.
 Do not restart the task, re-ask already answered setup questions, or discard prior tool results.
@@ -496,39 +366,120 @@ API_GATEWAY_CONTEXT_HANDOFF=on_model_switch
 - Session key: `X-Session-Id` header if present, otherwise SHA-1 of the first user message (same as sticky sessions).
 - Storage is in-memory only. Nothing is written to disk or logged.
 
-> **Important:** Context Handoff improves continuity for conversations routed through API-Gateway. It cannot recover provider-internal hidden state or messages that were never sent to the proxy.
+> **Important:** Context Handoff improves continuity for conversations routed through FreeRouter. It cannot recover provider-internal hidden state or messages that were never sent to the proxy.
+
+## Supported Providers
+
+<table>
+<tr>
+<td align="center" width="180"><a href="https://ai.google.dev"><b>Google</b><br/>Gemini 2.5 Flash · 3.x previews</a></td>
+<td align="center" width="180"><a href="https://groq.com"><b>Groq</b><br/>Llama 3.3, Llama 4, GPT-OSS, Qwen3</a></td>
+<td align="center" width="180"><a href="https://cerebras.ai"><b>Cerebras</b><br/>Qwen3 235B</a></td>
+<td align="center" width="180"><a href="https://opencode.ai/zen"><b>OpenCode Zen</b><br/>DeepSeek V4 Flash · Nemotron (promo)</a></td>
+</tr>
+<tr>
+<td align="center"><a href="https://mistral.ai"><b>Mistral</b><br/>Large 3 · Medium 3.5 · Codestral · Devstral</a></td>
+<td align="center"><a href="https://openrouter.ai"><b>OpenRouter</b><br/>21 free-tier models</a></td>
+<td align="center"><a href="https://github.com/marketplace/models"><b>GitHub Models</b><br/>GPT-4.1 · GPT-4o</a></td>
+<td align="center"><a href="https://developers.cloudflare.com/workers-ai"><b>Cloudflare</b><br/>Kimi K2 · GLM-4.7 · GPT-OSS · Granite 4</a></td>
+</tr>
+<tr>
+<td align="center"><a href="https://cohere.com"><b>Cohere</b><br/>Command R+ · Command-A (trial)</a></td>
+<td align="center"><a href="https://docs.z.ai"><b>Z.ai (Zhipu)</b><br/>GLM-4.5 · GLM-4.7 Flash</a></td>
+<td align="center"><a href="https://build.nvidia.com"><b>NVIDIA</b><br/>NIM · 40 RPM free (eval-only ToS)</a></td>
+<td align="center"><a href="https://huggingface.co/docs/inference-providers"><b>HuggingFace</b><br/>Router → DeepSeek V4 · Kimi K2.6 · Qwen3</a></td>
+</tr>
+<tr>
+<td align="center"><a href="https://ollama.com"><b>Ollama Cloud</b><br/>GLM-4.7 · Kimi K2 · gpt-oss · Qwen3</a></td>
+<td align="center"><a href="https://kilo.ai"><b>Kilo Gateway</b><br/>:free routes (anon ok)</a></td>
+<td align="center"><a href="https://pollinations.ai"><b>Pollinations</b><br/>GPT-OSS 20B (anon ok)</a></td>
+<td align="center"><a href="https://llm7.io"><b>LLM7</b><br/>GPT-OSS · Llama 3.1 · GLM (anon ok)</a></td>
+</tr>
+<tr>
+<td align="center"><a href="https://endpoints.ai.cloud.ovh.net"><b>OVH AI Endpoints</b><br/>Qwen3.5 397B · GPT-OSS · Llama 3.3 (anon ok)</a></td>
+<td align="center"></td>
+<td align="center"></td>
+<td align="center"></td>
+</tr>
+</table>
+
+<p align="center"><strong>Don't see yours? Add it.</strong> Any OpenAI-compatible endpoint — cloud service, local server, homelab GPU — becomes a provider in under a minute. It gets the same fallback chain, the same intelligent routing, the same rate-limit protection as every built-in. <a href="#what-freerouter-adds">See Custom Providers →</a></p>
+
+## Custom Platforms and Models
+
+The built-in provider list is a starting point, not a boundary. From the Keys page, the **Platforms** grid is the unified catalog — every built-in platform you've added a key for, alongside every custom platform you've registered. The grid ends with an **Add New Platform** tile that opens a modal for:
+
+- **Slug** — a short identifier like `my-ollama` (lowercase letters, digits, dashes; 2-32 chars; cannot collide with a built-in).
+- **Display name** — shown in the dashboard.
+- **Base URL** — the OpenAI-compatible endpoint, e.g. `http://192.168.1.10:11434/v1`.
+- **Rate limits** (optional) — RPM, RPD, TPM, TPD caps enforced per-provider.
+- **Max parallel requests** (optional) — concurrency ceiling so this provider never hogs all connection slots.
+
+Once a platform exists, its models are automatically discovered from the endpoint's `/v1/models` during creation by default. However, discovered models are **disabled by default** and must be manually enabled. You can also re-run discovery at any time via `POST /api/custom-providers/:slug/sync-models`, and there's an option to auto-enable discovered models during creation.
+
+- **Model ID** and **Display name** — required.
+- **Context window**, **Supports tools**, **Supports vision** — basic flags.
+- **Advanced** toggle exposes intelligence rank, speed rank, size label, per-model rate limits, and max output tokens.
+
+The model joins the fallback chain at the lowest priority and shows up everywhere built-in models do — `/v1/models`, the Fallback page, the Analytics page. You can edit any model (built-in or custom) later: adjust ranks, toggle tools/vision, cap output tokens, change rate limits — all from the dashboard.
+
+Adding an API key for a custom platform works the same as for a built-in: pick the custom slug in the **Add a provider key** form, paste the bearer (or leave blank for local servers that don't need one), and the key routes to your endpoint.
+
+Removing a custom platform archives it — models, keys, and fallback entries are preserved and restorable. Hard-delete is available but off by default.
+
+## Screenshots
+
+### Keys
+
+Manage provider credentials and grab the unified API key your apps connect with. Each key shows a status dot and when it was last health-checked. Custom platforms appear alongside built-in ones in the unified grid.
+
+![Keys page](repo-assets/keys.png)
+
+### Playground
+
+Send a chat completion through the router and see which provider served it, with the model ID and latency printed right on the message.
+
+![Playground page](repo-assets/playground.png)
+
+### Analytics
+
+Request volume, success rate, tokens in and out, average latency, and per-provider breakdowns over 24h / 7d / 30d windows.
+
+![Analytics page](repo-assets/analytics.png)
 
 ## Limitations
 
-Stacking free tiers — even with custom providers in the mix — has real trade-offs. Be honest with yourself about them:
+Stacking free tiers — even with custom providers in the mix — has real trade-offs:
 
-- **No frontier models out of the box.** The free-tier catalog tops out around Llama 3.3 70B, GLM-4.5, Qwen 3 Coder, and Gemini 2.5 Pro. You will not get GPT-5 or Claude Opus class reasoning through the built-in providers. For hard problems, pay for a real API — or bring your own paid provider as a custom platform.
-- **Intelligence degrades as the day progresses.** Your top-ranked models (usually Gemini 2.5 Pro, GPT-4o via GitHub Models) have the lowest daily caps. Once they hit their limits, the router falls down your priority chain to smaller/weaker models. Expect the effective intelligence of the endpoint to drop in the late hours of each day — then reset at UTC midnight.
+- **No frontier models out of the box.** The free-tier catalog tops out around Llama 3.3 70B, GLM-4.5, Qwen 3 Coder, and Gemini 2.5 Pro. For hard problems, pay for a real API — or bring your own paid provider as a custom platform.
+- **Intelligence degrades as the day progresses.** Your top-ranked models have the lowest daily caps. Once they hit their limits, the router falls down your priority chain to smaller/weaker models. Expect the effective intelligence to drop in the late hours — then reset at UTC midnight.
 - **Latency is highly variable.** Cerebras and Groq are extremely fast; others are not. You get whichever one is available at the moment.
-- **Free tiers can change without notice.** Providers regularly tighten, loosen, or remove free tiers. When that happens you'll see 429s or auth errors until the catalog catches up. Re-seed scripts live in `server/src/scripts/`.
-- **No SLA, by definition.** If you need reliability, use a paid provider with a contract — either directly or plugged into API-Gateway as a custom platform.
-- **Local-first.** There's no multi-tenant auth. Run this for yourself; don't expose it to the internet.
+- **Free tiers can change without notice.** Providers regularly tighten, loosen, or remove free tiers. When that happens you'll see 429s or auth errors until the catalog catches up.
+- **No SLA, by definition.** If you need reliability, use a paid provider with a contract — either directly or plugged into FreeRouter as a custom platform.
+- **Local-first.** No multi-tenant auth. Run this for yourself; don't expose it to the internet.
 
 ## Contributing
 
-Contributors very welcome! Good first PRs:
+Contributors welcome! Good first PRs:
 
 - **Add a provider** — copy `server/src/providers/openai-compat.ts` as a template, wire it into `server/src/providers/index.ts`, seed its models in `server/src/db/migrations.ts`, add a test in `server/src/__tests__/providers/`.
 - **Add an endpoint** — images, moderations, audio. The provider base class can grow new methods; adapters declare which they support.
-- **Improve the router** — cost-aware routing (cheapest-healthy-fastest tradeoffs), better latency-weighted priority, regional pinning.
+- **Improve the router** — cost-aware routing, better latency-weighted priority, regional pinning.
 - **Dashboard polish** — charts on the Analytics page, key rotation UX, batch import of keys from `.env`.
-- **Docs** — more examples, client library snippets for Go/Rust/etc., a deployment recipe for Docker or Fly.
+- **Docs** — more examples, client library snippets, deployment recipes.
 
 **Development loop:**
 
 ```bash
 npm install
 npm run dev      # server on :3001, dashboard on :5173, both with HMR
-npm test         # server vitest; also runs client tests if the workspace adds them
+npm test         # server vitest + client typecheck
 npm run build    # compile server and dashboard
 ```
 
-PRs should include a test, keep the existing test suite green, and match the `.editorconfig` / tsconfig defaults already in the repo. Issues and discussions are open.
+Or use the `api` CLI: `api start`, `api stop`, `api status`.
+
+PRs should include a test, keep the existing test suite green, and match the `.editorconfig` / tsconfig defaults. Issues and discussions are open.
 
 ### Contributors
 
@@ -570,7 +521,7 @@ PRs should include a test, keep the existing test suite green, and match the `.e
 <a href="https://github.com/hjhhoni"><img src="https://images.weserv.nl/?url=github.com/hjhhoni.png&w=60&h=60&fit=cover&mask=circle" width="60" alt="@hjhhoni" /></a>
 <a href="https://github.com/immanuelsavio"><img src="https://images.weserv.nl/?url=github.com/immanuelsavio.png&w=60&h=60&fit=cover&mask=circle" width="60" alt="@immanuelsavio" /></a>
 
-## Terms of Service review
+## Terms of Service Review
 
 A self-hosted, single-user, personal-use setup was re-reviewed against each provider's ToS (May 2026). Summary:
 
@@ -590,16 +541,16 @@ A self-hosted, single-user, personal-use setup was re-reviewed against each prov
 | Ollama Cloud | ✅ Likely OK | Free plan permits cloud-model access (1 concurrent, 5-hour session caps). No anti-proxy / anti-resale clauses found. |
 | OVH AI Endpoints | ✅ Likely OK | Anonymous access is officially documented (2 req/min per IP per model). OVH reserves the right to introduce token/consumption caps. |
 
-Rules of thumb that keep most providers happy: **one account per provider**, **no reselling**, **no sharing your endpoint with other humans**, **don't hammer a free tier as a paid production backend**. This is informational, not legal advice — read each provider's ToS and make your own call.
+Rules of thumb: **one account per provider**, **no reselling**, **no sharing your endpoint with other humans**, **don't hammer a free tier as a paid production backend**. This is informational, not legal advice — read each provider's ToS and make your own call.
 
 ## Disclaimer
 
-**This project is for personal experimentation and learning, not production.** Free tiers exist so developers can prototype against them; they aren't a stable, supported inference substrate and shouldn't be treated as one. If you build something real on top of API-Gateway, swap in a paid API before you ship. Your relationship with each upstream provider is governed by the terms you accepted when you created your account — those terms still apply when the traffic is proxied through this project, and you're responsible for complying with them.
+**This project is for personal experimentation and learning, not production.** Free tiers exist so developers can prototype against them; they aren't a stable, supported inference substrate and shouldn't be treated as one. If you build something real on top of FreeRouter, swap in a paid API before you ship. Your relationship with each upstream provider is governed by the terms you accepted when you created your account — those terms still apply when the traffic is proxied through this project, and you're responsible for complying with them.
 
 ***
 
-Built on [tashfeenahmed/freellmapi](https://github.com/tashfeenahmed/freellmapi). Fork maintained by [MLuqmanBR](https://github.com/MLuqmanBR).
+Built on [tashfeenahmed/freellmapi](https://github.com/tashfeenahmed/freellmapi). Fork maintained by [animaios](https://github.com/animaios).
 
 ## License
 
-[MIT](./LICENSE)
+[MIT](./LICENSE) — © upstream contributors + animaios contributors.
