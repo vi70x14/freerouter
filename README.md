@@ -10,8 +10,11 @@ Aggregate free tiers from Google, Groq, Cerebras, NVIDIA, Mistral, OpenRouter, G
 
 <img width="256" height="384" alt="kawaii anima-chan" src="https://github.com/user-attachments/assets/992ae2fc-0473-40c9-b99b-cea7840b6543" />
 
+<!--
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
+-->
+
 [![DeepSource](https://app.deepsource.com/gh/animaios/freeproxy.svg/?label=code+coverage&show_trend=true&token=c4KmjW5MkxAjVRTm0xZ9utwK)](https://app.deepsource.com/gh/animaios/freeproxy/)
 [![DeepSource](https://app.deepsource.com/gh/animaios/freeproxy.svg/?label=active+issues&show_trend=true&token=c4KmjW5MkxAjVRTm0xZ9utwK)](https://app.deepsource.com/gh/animaios/freeproxy/)
 [![DeepSource](https://app.deepsource.com/gh/animaios/freeproxy.svg/?label=resolved+issues&show_trend=true&token=c4KmjW5MkxAjVRTm0xZ9utwK)](https://app.deepsource.com/gh/animaios/freeproxy/)
